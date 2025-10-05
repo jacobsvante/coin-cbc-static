@@ -27,25 +27,21 @@ WORKDIR /opt
 RUN git clone --depth 1 https://github.com/coin-or/coinbrew.git
 RUN ./coinbrew/coinbrew fetch Cbc:${CBC_VERSION} --no-prompt
 
-# Configure without static flags to avoid exit 77
-RUN cd Cbc && \
-    ./configure \
-        --prefix=/opt/coin \
-        --enable-static \
-        --disable-shared \
-        --without-lapack \
-        --without-blas \
-        --disable-dependency-tracking \
-        CFLAGS="-O2" \
-        CXXFLAGS="-O2"
-
-# Build with static flags in make phase
-RUN cd Cbc && \
-    make LDFLAGS="-static" AM_LDFLAGS="-static" -j$(nproc) || \
-    make -j$(nproc)  # Fallback to normal make if static fails
-
-# Install
-RUN cd Cbc && make install
+# Build CBC and all dependencies using coinbrew
+# Configure and build without static flags first to avoid exit 77
+RUN ./coinbrew/coinbrew build Cbc:${CBC_VERSION} \
+    --no-prompt \
+    --tests=none \
+    --prefix=/opt/coin \
+    --no-third-party \
+    --verbosity=3 \
+    --enable-static \
+    --disable-shared \
+    --without-lapack \
+    --without-blas \
+    ADD_CFLAGS="-O2" \
+    ADD_CXXFLAGS="-O2" \
+    ADD_LDFLAGS="-static"
 
 # Check the results
 RUN echo "Checking built binaries..." && \
