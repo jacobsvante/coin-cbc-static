@@ -1,0 +1,102 @@
+name: Build and Push LightGBM Static Library
+
+on:
+  push:
+    branches: [ main ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      lightgbm_version:
+        description: LightGBM version/tag to build (e.g., v4.6.0, stable)
+        required: false
+        default: stable
+
+env:
+  DOCKER_REGISTRY: docker.io
+  # Change this to your Docker Hub username
+  DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
+  IMAGE_NAME: lightgbm-static-aarch64
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform:
+          - linux/arm64
+          - linux/amd64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Determine LightGBM version
+        id: lgbm_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lightgbm_version }}" ]; then
+            echo "version=${{ github.event.inputs.lightgbm_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=stable" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Log in to Docker Hub
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}
+          tags: |
+            # Branch builds
+            type=ref,event=branch
+            # PR builds
+            type=ref,event=pr
+            # Latest tag for default branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            # LightGBM version tag
+            type=raw,value=${{ steps.lgbm_version.outputs.version }},enable={{is_default_branch}}
+            # Date-based tag for main branch
+            type=raw,value=${{ steps.lgbm_version.outputs.version }}-{{date 'YYYY-MM-DD'}},enable={{is_default_branch}}
+            # SHA-based tags
+            type=sha,format=short,prefix={{branch}}-
+          flavor: |
+            latest=auto
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            LIGHTGBM_VERSION=${{ steps.lgbm_version.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Create multi-platform manifest (if multiple platforms)
+        if: github.event_name != 'pull_request' && strategy.job-total > 1
+        run: |
+          docker buildx imagetools create \
+            --tag ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest \
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest-linux-arm64 \
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest-linux-amd64
