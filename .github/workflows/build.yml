@@ -1,4 +1,4 @@
-name: Build and Push LightGBM Static Library
+name: Build and Push CBC Static Library
 
 on:
   push:
@@ -9,16 +9,16 @@ on:
     branches: [ main ]
   workflow_dispatch:
     inputs:
-      lightgbm_version:
-        description: LightGBM version/tag to build (e.g., v4.6.0, stable)
+      cbc_version:
+        description: 'CBC version/tag to build (e.g., 2.10.12, master, releases/2.10.11)'
         required: false
-        default: stable
+        default: '2.10.12'
 
 env:
   DOCKER_REGISTRY: docker.io
   # Change this to your Docker Hub username
   DOCKER_USERNAME: ${{ vars.DOCKER_USERNAME }}
-  IMAGE_NAME: lightgbm-static-aarch64
+  IMAGE_NAME: coin-cbc-static
 
 jobs:
   build-and-push:
@@ -36,18 +36,18 @@ jobs:
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
         with:
-          platforms: arm64
+          platforms: arm64,amd64
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Determine LightGBM version
-        id: lgbm_version
+      - name: Determine CBC version
+        id: cbc_version
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.lightgbm_version }}" ]; then
-            echo "version=${{ github.event.inputs.lightgbm_version }}" >> $GITHUB_OUTPUT
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.cbc_version }}" ]; then
+            echo "version=${{ github.event.inputs.cbc_version }}" >> $GITHUB_OUTPUT
           else
-            echo "version=stable" >> $GITHUB_OUTPUT
+            echo "version=2.10.12" >> $GITHUB_OUTPUT
           fi
 
       - name: Log in to Docker Hub
@@ -70,14 +70,17 @@ jobs:
             type=ref,event=pr
             # Latest tag for default branch
             type=raw,value=latest,enable={{is_default_branch}}
-            # LightGBM version tag
-            type=raw,value=${{ steps.lgbm_version.outputs.version }},enable={{is_default_branch}}
+            # CBC version tag
+            type=raw,value=${{ steps.cbc_version.outputs.version }},enable={{is_default_branch}}
             # Date-based tag for main branch
-            type=raw,value=${{ steps.lgbm_version.outputs.version }}-{{date 'YYYY-MM-DD'}},enable={{is_default_branch}}
+            type=raw,value=${{ steps.cbc_version.outputs.version }}-{{date 'YYYY-MM-DD'}},enable={{is_default_branch}}
             # SHA-based tags
             type=sha,format=short,prefix={{branch}}-
+            # Platform suffix
+            type=raw,value=latest-${{ matrix.platform }},enable={{is_default_branch}}
           flavor: |
             latest=auto
+            suffix=-${{ matrix.platform }},onlatest=false
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -85,18 +88,44 @@ jobs:
           context: .
           file: Dockerfile
           platforms: ${{ matrix.platform }}
+          target: static-libs
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            LIGHTGBM_VERSION=${{ steps.lgbm_version.outputs.version }}
+            CBC_VERSION=${{ steps.cbc_version.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Create multi-platform manifest (if multiple platforms)
-        if: github.event_name != 'pull_request' && strategy.job-total > 1
+  create-manifest:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ env.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+
+      - name: Determine CBC version
+        id: cbc_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.cbc_version }}" ]; then
+            echo "version=${{ github.event.inputs.cbc_version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=2.10.12" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create multi-platform manifest
         run: |
           docker buildx imagetools create \
             --tag ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest \
-            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest-linux-arm64 \
-            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest-linux-amd64
+            --tag ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ steps.cbc_version.outputs.version }} \
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest-linux/arm64 \
+            ${{ env.DOCKER_REGISTRY }}/${{ env.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:latest-linux/amd64
