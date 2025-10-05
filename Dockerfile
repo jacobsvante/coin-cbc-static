@@ -165,10 +165,10 @@ RUN echo "=== Verifying CBC is fully static on Debian ===" && \
     echo "" && \
     echo "Checking for dynamic dependencies:" && \
     if ldd /opt/coin/bin/cbc 2>&1 | grep -q "not a dynamic executable"; then \
-        echo "✓ CBC is fully static (no dynamic dependencies)" \
+        echo "✓ CBC is fully static (no dynamic dependencies)"; \
     else \
         echo "✗ CBC has dynamic dependencies:" && \
-        ldd /opt/coin/bin/cbc \
+        ldd /opt/coin/bin/cbc; \
     fi && \
     echo "" && \
     echo "Testing if CBC actually runs:" && \
