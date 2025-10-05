@@ -20,27 +20,30 @@ RUN apk add --no-cache \
     linux-headers \
     musl-dev \
     perl \
-    python3 \
-    # Ensure we have static libraries
-    libstdc++ \
-    libgcc
+    python3
 
 WORKDIR /opt
-
-# Set environment variables to force static linking
-ENV LDFLAGS="-static -static-libgcc -static-libstdc++" \
-    CXXFLAGS="-O2" \
-    CFLAGS="-O2" \
-    CC="gcc" \
-    CXX="g++"
 
 # Clone and fetch
 RUN git clone --depth 1 https://github.com/coin-or/coinbrew.git
 RUN ./coinbrew/coinbrew fetch Cbc:${CBC_VERSION} --no-prompt
 
-# Build CBC and all dependencies using coinbrew with true static linking
-# We need to ensure libstdc++ and libgcc are also statically linked
-RUN ./coinbrew/coinbrew build Cbc:${CBC_VERSION} \
+# Build CBC with static linking enforced at every level
+# Use a wrapper script to ensure static compilation
+RUN echo '#!/bin/sh' > /usr/local/bin/static-gcc && \
+    echo 'exec /usr/bin/gcc -static "$@"' >> /usr/local/bin/static-gcc && \
+    chmod +x /usr/local/bin/static-gcc && \
+    echo '#!/bin/sh' > /usr/local/bin/static-g++ && \
+    echo 'exec /usr/bin/g++ -static "$@"' >> /usr/local/bin/static-g++ && \
+    chmod +x /usr/local/bin/static-g++
+
+# Build with static wrappers
+RUN CC=/usr/local/bin/static-gcc \
+    CXX=/usr/local/bin/static-g++ \
+    CFLAGS="-O2" \
+    CXXFLAGS="-O2" \
+    LDFLAGS="-static" \
+    ./coinbrew/coinbrew build Cbc:${CBC_VERSION} \
     --no-prompt \
     --tests=none \
     --prefix=/opt/coin \
@@ -49,63 +52,47 @@ RUN ./coinbrew/coinbrew build Cbc:${CBC_VERSION} \
     --enable-static \
     --disable-shared \
     --without-lapack \
-    --without-blas \
-    LDFLAGS="-static -static-libgcc -static-libstdc++" \
-    ADD_CFLAGS="-O2" \
-    ADD_CXXFLAGS="-O2" \
-    ADD_LDFLAGS="-static -static-libgcc -static-libstdc++" \
-    LIBS="-static"
+    --without-blas || \
+    (echo "Build with static wrappers failed, trying alternative approach..." && \
+     LDFLAGS="-static -all-static" \
+     LIBS="-static" \
+     ./coinbrew/coinbrew build Cbc:${CBC_VERSION} \
+     --no-prompt \
+     --tests=none \
+     --prefix=/opt/coin-alt \
+     --no-third-party \
+     --verbosity=3 \
+     --enable-static \
+     --disable-shared \
+     --without-lapack \
+     --without-blas)
 
-# Alternative: If the above doesn't work, manually relink the binaries
-RUN if ldd /opt/coin/bin/cbc 2>/dev/null | grep -q "=>"; then \
-        echo "CBC not fully static, attempting to relink..." && \
-        cd /opt/coin/bin && \
-        for binary in cbc clp; do \
-            if [ -f "$binary" ]; then \
-                echo "Relinking $binary as fully static..." && \
-                g++ -static -static-libgcc -static-libstdc++ \
-                    -o "${binary}.static" \
-                    -L/opt/coin/lib \
-                    -Wl,--whole-archive \
-                    /opt/coin/lib/libCbc.a \
-                    /opt/coin/lib/libCbcSolver.a \
-                    /opt/coin/lib/libClp.a \
-                    /opt/coin/lib/libOsiClp.a \
-                    /opt/coin/lib/libOsi.a \
-                    /opt/coin/lib/libCoinUtils.a \
-                    /opt/coin/lib/libCgl.a \
-                    -Wl,--no-whole-archive \
-                    -lm -lpthread \
-                    2>/dev/null && \
-                mv "${binary}.static" "$binary" || \
-                echo "Manual relinking failed for $binary"; \
-            fi \
-        done \
+# Check results and use whichever worked
+RUN if [ -f /opt/coin/bin/cbc ]; then \
+        echo "Using primary build" && \
+        file /opt/coin/bin/cbc && \
+        ldd /opt/coin/bin/cbc 2>&1 || true; \
+    elif [ -f /opt/coin-alt/bin/cbc ]; then \
+        echo "Using alternative build" && \
+        mv /opt/coin-alt /opt/coin && \
+        file /opt/coin/bin/cbc && \
+        ldd /opt/coin/bin/cbc 2>&1 || true; \
+    else \
+        echo "ERROR: No build succeeded!" && \
+        exit 1; \
     fi
 
-# Check the results
-RUN echo "Checking built binaries..." && \
-    ls -la /opt/coin/bin/ 2>/dev/null || echo "No bin directory" && \
-    file /opt/coin/bin/* 2>/dev/null || echo "No binaries found"
+# Strip binaries
+RUN find /opt/coin/bin -type f -executable -exec strip --strip-all {} + 2>/dev/null || true
 
 # Final image
 FROM alpine:3.22 AS final
-
-# Install runtime essentials (though shouldn't be needed for static binaries)
-RUN apk add --no-cache \
-    libstdc++ \
-    libgcc \
-    libgomp \
-    musl
 
 # Copy the built CBC
 COPY --from=builder /opt/coin /opt/coin
 
 # Add the coin binaries to PATH
 ENV PATH="/opt/coin/bin:${PATH}"
-
-# Strip binaries to reduce size
-RUN find /opt/coin/bin -type f -executable -exec strip --strip-all {} + 2>/dev/null || true
 
 # Verify what we have
 RUN echo "=== Final CBC Binary Check ===" && \
