@@ -170,3 +170,35 @@ RUN echo "" && \
     echo "✓ CBC solver works on Debian" && \
     echo "" && \
     echo "This proves the binary is fully static and portable across Linux distros"
+
+# Minimal image with just static libraries and headers for development
+FROM busybox:stable AS static-libs
+
+# Copy static libraries
+COPY --from=builder /opt/coin/lib /lib
+
+# Copy header files
+COPY --from=builder /opt/coin/include /include
+
+# Copy pkg-config files if they exist
+COPY --from=builder /opt/coin/lib/pkgconfig /lib/pkgconfig
+
+# Create a simple test to verify the files are there
+RUN echo "=== CBC Static Development Files ===" && \
+    echo "Static libraries:" && \
+    ls -la /lib/*.a | head -10 && \
+    echo "" && \
+    echo "Total static libraries: $(ls /lib/*.a 2>/dev/null | wc -l)" && \
+    echo "Total header files: $(find /include -name '*.h' -o -name '*.hpp' 2>/dev/null | wc -l)" && \
+    echo "" && \
+    echo "Library sizes:" && \
+    du -sh /lib/*.a | sort -h | tail -5
+
+WORKDIR /workspace
+
+# This image contains:
+# - Static libraries (.a files) in /lib
+# - Header files (.h, .hpp) in /include
+# - pkg-config files (.pc) in /lib/pkgconfig
+# - Busybox for basic shell and utilities
+CMD ["/bin/sh"]
