@@ -82,6 +82,20 @@ RUN if [ -f /opt/coin/bin/cbc ]; then \
         exit 1; \
     fi
 
+# Verify all required static libraries were built
+RUN echo "Checking for required static libraries..." && \
+    for lib in CoinUtils Osi OsiClp OsiCbc Cgl Clp Cbc CbcSolver; do \
+        if [ -f "/opt/coin/lib/lib${lib}.a" ]; then \
+            echo "  ✓ lib${lib}.a found ($(du -h /opt/coin/lib/lib${lib}.a | cut -f1))"; \
+        else \
+            echo "  ✗ lib${lib}.a MISSING!"; \
+            echo "    Available libraries:"; \
+            ls /opt/coin/lib/*.a 2>/dev/null | head -5; \
+            exit 1; \
+        fi; \
+    done && \
+    echo "All required libraries built successfully!"
+
 # Strip binaries
 RUN find /opt/coin/bin -type f -executable -exec strip --strip-all {} + 2>/dev/null || true
 
@@ -174,8 +188,9 @@ RUN echo "" && \
 # Minimal image with just static libraries and headers for development
 FROM busybox:stable AS static-libs
 
-# Copy static libraries
-COPY --from=builder /opt/coin/lib /lib
+# Copy ALL static libraries (including dependencies)
+COPY --from=builder /opt/coin/lib/*.a /lib/
+COPY --from=builder /opt/coin/lib/*.la /lib/
 
 # Copy header files
 COPY --from=builder /opt/coin/include /include
@@ -186,18 +201,31 @@ COPY --from=builder /opt/coin/lib/pkgconfig /lib/pkgconfig
 # Create a simple test to verify the files are there
 RUN echo "=== CBC Static Development Files ===" && \
     echo "Static libraries:" && \
-    ls -la /lib/*.a | head -10 && \
+    ls -la /lib/*.a 2>/dev/null | head -20 && \
+    echo "" && \
+    echo "All static libraries available:" && \
+    for lib in /lib/*.a; do basename $lib; done | sort && \
     echo "" && \
     echo "Total static libraries: $(ls /lib/*.a 2>/dev/null | wc -l)" && \
     echo "Total header files: $(find /include -name '*.h' -o -name '*.hpp' 2>/dev/null | wc -l)" && \
     echo "" && \
     echo "Library sizes:" && \
-    du -sh /lib/*.a | sort -h | tail -5
+    du -sh /lib/*.a | sort -h | tail -10 && \
+    echo "" && \
+    echo "Checking for required COIN-OR libraries:" && \
+    for required in libOsi libOsiClp libOsiCbc libCoinUtils libCgl libClp libCbc libCbcSolver; do \
+        if ls /lib/${required}*.a 2>/dev/null | head -1; then \
+            echo "  ✓ Found ${required}"; \
+        else \
+            echo "  ✗ Missing ${required}"; \
+        fi; \
+    done
 
 WORKDIR /workspace
 
 # This image contains:
 # - Static libraries (.a files) in /lib
+# - Libtool archives (.la files) in /lib
 # - Header files (.h, .hpp) in /include
 # - pkg-config files (.pc) in /lib/pkgconfig
 # - Busybox for basic shell and utilities
