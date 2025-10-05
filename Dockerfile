@@ -1,4 +1,5 @@
 # Build fully static CBC binaries with musl
+# CBC_VERSION can be: 2.10.12, master, releases/2.10.11, etc.
 ARG CBC_VERSION=2.10.12
 
 # Build CBC with static linking
@@ -28,7 +29,7 @@ RUN git clone --depth 1 https://github.com/coin-or/coinbrew.git
 RUN ./coinbrew/coinbrew fetch Cbc:${CBC_VERSION} --no-prompt
 
 # Build CBC and all dependencies using coinbrew
-# Configure and build without static flags first to avoid exit 77
+# Using ADD_* flags to add static linking without breaking configure
 RUN ./coinbrew/coinbrew build Cbc:${CBC_VERSION} \
     --no-prompt \
     --tests=none \
@@ -41,7 +42,7 @@ RUN ./coinbrew/coinbrew build Cbc:${CBC_VERSION} \
     --without-blas \
     ADD_CFLAGS="-O2" \
     ADD_CXXFLAGS="-O2" \
-    ADD_LDFLAGS="-static"
+    ADD_LDFLAGS="-static -Wl,--gc-sections"
 
 # Check the results
 RUN echo "Checking built binaries..." && \
